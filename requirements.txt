@@ -3,3 +3,5 @@ pandas
 faiss-cpu
 sentence-transformers
 google-generativeai
+streamlit-lottie
+
