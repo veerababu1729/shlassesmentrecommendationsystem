@@ -98,14 +98,18 @@ if st.button("Recommend"):
                 top_df = df.sort_values("score", ascending=False).head(10)
                 st.success("Top Recommended Assessments:")
                 
-                # Use the correct column names from your CSV
-                display_columns = ["name", "url", "duration", "remote_testing", "adaptive_irt", "test_type", "score"]
+                # Create a copy for display formatting
+                display_df = top_df.copy()
                 
-                # Format the display for better readability
-                display_df = top_df[display_columns].copy()
+                # Format the URL column with markdown links
+                display_df["url"] = display_df.apply(
+                    lambda row: f"[Link]({row['url']})", axis=1
+                )
+                
+                # Rename and format other columns
                 display_df = display_df.rename(columns={
                     "name": "Assessment Name",
-                    "url": "URL",
+                    "url": "URL",  
                     "duration": "Duration",
                     "remote_testing": "Remote Testing Support",
                     "adaptive_irt": "Adaptive/IRT Support",
@@ -116,6 +120,13 @@ if st.button("Recommend"):
                 # Format score as percentage
                 display_df["Relevance Score"] = display_df["Relevance Score"].apply(lambda x: f"{x:.2%}")
                 
-                st.dataframe(display_df)
+                # Display with markdown enabled for URLs
+                st.dataframe(
+                    display_df,
+                    column_config={
+                        "URL": st.column_config.LinkColumn()
+                    },
+                    hide_index=True
+                )
             except Exception as e:
                 st.error(f"Error during recommendation: {e}")
