@@ -3,6 +3,7 @@
 **Author:** [Veerababu Palepu]  
 **Live UI Webapp:** [https://shlassessmentrecommendation.streamlit.app](https://shlassessmentrecommendation.streamlit.app)  
 **API Endpoint:** [https://shlassessementapiendpoint.onrender.com/recommend](https://shlassessementapiendpoint.onrender.com/recommend)  
+Documentation Link: https://docs.google.com/document/d/1sxx3PIxQii_J7cgBx6FcNcF7dYggR5JBwr4CbwBIKOs/edit?usp=sharing
 
 ---
 
