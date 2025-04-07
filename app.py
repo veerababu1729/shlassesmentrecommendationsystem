@@ -1,54 +1,44 @@
-# app.py
 import streamlit as st
 import pandas as pd
-import numpy as np
-import faiss
-from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
-import os
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
 
-# Set Gemini API key (add in Streamlit Cloud secrets later)
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+# Page Config
+st.set_page_config(page_title="SHL Assessment Recommender", layout="centered")
 
-# Load assessment data
-df = pd.read_csv("data/assessments.csv")
+# Title
+st.title("🔍 SHL Assessment Recommendation System")
+st.write("Enter a job description or query to get best-matched SHL assessments.")
 
-# Load embedding model and build index
-model = SentenceTransformer("all-MiniLM-L6-v2")
-embeddings = model.encode(df["description"].tolist())
-index = faiss.IndexFlatL2(embeddings.shape[1])
-index.add(np.array(embeddings))
+# Gemini API setup (replace with your own API key)
+genai.configure(api_key="YOUR_GEMINI_API_KEY")
+model = genai.GenerativeModel("gemini-pro")
 
-# Gemini model for summarizing input
-gemini = genai.GenerativeModel("gemini-pro")
+# Load SHL assessments
+df = pd.read_csv("data/assessments.csv")  # make sure this file exists
 
-# UI starts here
-st.title("🔍 SHL Assessment Recommender")
+# Get user input
+query = st.text_area("Paste job description or query here:")
 
-user_input = st.text_area("Enter job description or query:", height=150)
+# Embed using Gemini
+def get_embedding(text):
+    response = model.embed_content(
+        content=text,
+        task_type="retrieval_document"
+    )
+    return np.array(response["embedding"])
 
-if st.button("Recommend Assessments"):
-    if not user_input.strip():
-        st.warning("Please enter a query or job description.")
-    else:
-        with st.spinner("Thinking with Gemini..."):
-            prompt = f"""Summarize this job description to match assessment test descriptions:\n\n{user_input}\n\nSummary:"""
-            summary = gemini.generate_content(prompt).text.strip()
+# Run Recommendation
+if st.button("Recommend"):
+    with st.spinner("Analyzing with Gemini..."):
+        try:
+            query_vec = get_embedding(query)
+            df["score"] = df["full_text"].apply(lambda x: cosine_similarity([query_vec], [get_embedding(x)])[0][0])
+            top_df = df.sort_values("score", ascending=False).head(10)
 
-        q_embedding = model.encode([summary])
-        D, I = index.search(np.array(q_embedding), 10)
-        results = df.iloc[I[0]]
+            st.success("Top Recommended Assessments:")
+            st.dataframe(top_df[["Assessment Name", "URL", "Duration", "Remote Testing Support", "Adaptive/IRT Support", "Test Type"]])
 
-        st.markdown("### 🔗 Top Assessment Matches")
-        st.markdown(f"**Gemini Summary**: {summary}")
-
-        for _, row in results.iterrows():
-            st.markdown(f"""
-            **[{row['name']}]({row['url']})**  
-            - ⏱ Duration: {row['duration']}  
-            - 📋 Type: {row['test_type']}  
-            - 🌐 Remote: {row['remote']}  
-            - 🧠 Adaptive: {row['adaptive']}  
-            ---
-            """)
-
+        except Exception as e:
+            st.error(f"Error during recommendation: {e}")
