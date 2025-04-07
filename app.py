@@ -34,6 +34,14 @@ st.write("Paste a job description or query below:")
 # Load data
 try:
     df = pd.read_csv("data/assessments.csv")
+    
+    # Add a full_text column if it doesn't exist
+    if "full_text" not in df.columns:
+        # Create full_text by combining available information
+        df["full_text"] = df.apply(
+            lambda row: f"{row['name']} is a {row['test_type']} assessment with duration of {row['duration']}.", 
+            axis=1
+        )
 except Exception as e:
     st.error(f"Error loading data: {e}")
     st.stop()
@@ -78,7 +86,9 @@ if st.button("Recommend"):
                         doc_vec = get_embedding(data["full_text"])
                         df.at[index, "score"] = cosine_similarity([query_vec], [doc_vec])[0][0]
                     except Exception as e:
-                        st.warning(f"Error processing assessment {data['Assessment Name']}: {e}")
+                        # Use the correct column name 'name' instead of 'Assessment Name'
+                        assessment_name = data.get("name", "Unknown")
+                        st.warning(f"Error processing assessment {assessment_name}: {e}")
                     
                     # Update progress
                     progress = int((i + 1) / total_items * 100)
@@ -87,6 +97,25 @@ if st.button("Recommend"):
                 # Sort and display results
                 top_df = df.sort_values("score", ascending=False).head(10)
                 st.success("Top Recommended Assessments:")
-                st.dataframe(top_df[["Assessment Name", "URL", "Duration", "Remote Testing Support", "Adaptive/IRT Support", "Test Type", "score"]])
+                
+                # Use the correct column names from your CSV
+                display_columns = ["name", "url", "duration", "remote_testing", "adaptive_irt", "test_type", "score"]
+                
+                # Format the display for better readability
+                display_df = top_df[display_columns].copy()
+                display_df = display_df.rename(columns={
+                    "name": "Assessment Name",
+                    "url": "URL",
+                    "duration": "Duration",
+                    "remote_testing": "Remote Testing Support",
+                    "adaptive_irt": "Adaptive/IRT Support",
+                    "test_type": "Test Type",
+                    "score": "Relevance Score"
+                })
+                
+                # Format score as percentage
+                display_df["Relevance Score"] = display_df["Relevance Score"].apply(lambda x: f"{x:.2%}")
+                
+                st.dataframe(display_df)
             except Exception as e:
                 st.error(f"Error during recommendation: {e}")
