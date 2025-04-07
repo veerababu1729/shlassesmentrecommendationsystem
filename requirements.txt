@@ -5,3 +5,5 @@ sentence-transformers
 google-generativeai
 streamlit-lottie
 scikit-learn
+langchain
+
