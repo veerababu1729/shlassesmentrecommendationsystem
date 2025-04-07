@@ -5,9 +5,26 @@ import google.generativeai as genai
 from sklearn.metrics.pairwise import cosine_similarity
 import os
 
-# Setup Gemini API
-genai.configure(api_key=os.environ["AIzaSyB5QN2a1QEsUcDe6oB7cxcGkrK4Ojgn1UE"])
-embedding_model = genai.EmbeddingModel(model_name="models/embedding-001")
+# Setup Gemini API - Use proper error handling for API key
+try:
+    # Try to get from environment variables
+    api_key = os.environ.get("GEMINI_API_KEY")
+    
+    # If not found in environment, use st.secrets (Streamlit's way to access secrets)
+    if api_key is None:
+        api_key = st.secrets.get("GEMINI_API_KEY", None)
+    
+    # If still None, we'll handle it with a user input field
+    if api_key is None:
+        api_key = st.text_input("Enter your Gemini API Key:", type="password")
+        if not api_key:
+            st.warning("Please enter a valid API key to use this app.")
+            st.stop()
+    
+    genai.configure(api_key=api_key)
+except Exception as e:
+    st.error(f"Error configuring API: {e}")
+    st.stop()
 
 # Streamlit UI
 st.set_page_config(page_title="SHL Assessment Recommender", layout="centered")
@@ -15,23 +32,61 @@ st.title("🔍 SHL Assessment Recommendation System")
 st.write("Paste a job description or query below:")
 
 # Load data
-df = pd.read_csv("data/assessments.csv")
+try:
+    df = pd.read_csv("data/assessments.csv")
+except Exception as e:
+    st.error(f"Error loading data: {e}")
+    st.stop()
 
 # Get user input
 query = st.text_area("Job Description or Query")
 
+# Fix for the embedding model - Use the correct API based on version 0.8.4
 def get_embedding(text):
-    response = embedding_model.embed(content=text, task_type="retrieval_document")
-    return np.array(response["embedding"])
+    try:
+        # Current Google Generative AI API (v0.8.4) uses this method for embeddings
+        response = genai.embed_content(
+            model="models/embedding-001",
+            content=text,
+            task_type="retrieval_document"
+        )
+        return np.array(response["embedding"])
+    except Exception as e:
+        st.error(f"Error generating embedding: {e}")
+        raise
 
 # Recommend
 if st.button("Recommend"):
-    with st.spinner("Analyzing using Gemini..."):
-        try:
-            query_vec = get_embedding(query)
-            df["score"] = df["full_text"].apply(lambda x: cosine_similarity([query_vec], [get_embedding(x)])[0][0])
-            top_df = df.sort_values("score", ascending=False).head(10)
-            st.success("Top Recommended Assessments:")
-            st.dataframe(top_df[["Assessment Name", "URL", "Duration", "Remote Testing Support", "Adaptive/IRT Support", "Test Type"]])
-        except Exception as e:
-            st.error(f"Error during recommendation: {e}")
+    if not query:
+        st.warning("Please enter a job description or query.")
+    else:
+        with st.spinner("Analyzing using Gemini..."):
+            try:
+                query_vec = get_embedding(query)
+                
+                # Create a progress bar for embedding generation
+                progress_bar = st.progress(0)
+                total_items = len(df)
+                
+                # Create empty score column
+                df["score"] = 0.0
+                
+                # Process in batches to show progress
+                for i, row in enumerate(df.iterrows()):
+                    index, data = row
+                    try:
+                        doc_vec = get_embedding(data["full_text"])
+                        df.at[index, "score"] = cosine_similarity([query_vec], [doc_vec])[0][0]
+                    except Exception as e:
+                        st.warning(f"Error processing assessment {data['Assessment Name']}: {e}")
+                    
+                    # Update progress
+                    progress = int((i + 1) / total_items * 100)
+                    progress_bar.progress(progress)
+                
+                # Sort and display results
+                top_df = df.sort_values("score", ascending=False).head(10)
+                st.success("Top Recommended Assessments:")
+                st.dataframe(top_df[["Assessment Name", "URL", "Duration", "Remote Testing Support", "Adaptive/IRT Support", "Test Type", "score"]])
+            except Exception as e:
+                st.error(f"Error during recommendation: {e}")
