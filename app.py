@@ -6,7 +6,7 @@ from sklearn.metrics.pairwise import cosine_similarity
 import os
 
 # Setup Gemini API
-genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+genai.configure(api_key=os.environ["AIzaSyB5QN2a1QEsUcDe6oB7cxcGkrK4Ojgn1UE"])
 embedding_model = genai.EmbeddingModel(model_name="models/embedding-001")
 
 # Streamlit UI
