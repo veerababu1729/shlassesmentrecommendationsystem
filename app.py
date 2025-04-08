@@ -49,26 +49,6 @@ except Exception as e:
 # Get user input
 query = st.text_area("Job Description or Query")
 
-# Function to analyze query using Gemini to determine key skills
-def analyze_query_skills(query):
-    try:
-        model = genai.GenerativeModel('gemini-pro')
-        prompt = f"""
-        Analyze this job description or query and identify the key technical skills required:
-        
-        Query: {query}
-        
-        Respond ONLY with a comma-separated list of the main technical skills mentioned or implied.
-        Example output: "Java, Spring, Hibernate, SQL"
-        """
-        
-        response = model.generate_content(prompt)
-        skills = response.text.strip().split(',')
-        return [skill.strip().lower() for skill in skills]
-    except Exception as e:
-        st.error(f"Error analyzing query: {e}")
-        return []
-
 # Fix for the embedding model - Use the correct API based on version 0.8.4
 def get_embedding(text):
     try:
@@ -83,8 +63,49 @@ def get_embedding(text):
         st.error(f"Error generating embedding: {e}")
         raise
 
+# Check if an assessment is relevant based on keywords in query
+def is_relevant_to_query(assessment_text, query_terms):
+    assessment_text = assessment_text.lower()
+    # Extract important words from query (remove common words)
+    query_terms = [term.lower() for term in query_terms.split() 
+                  if len(term) > 2 and term.lower() not in ['the', 'and', 'for', 'with']]
+    
+    # Count how many query terms appear in the assessment text
+    matches = sum(1 for term in query_terms if term in assessment_text)
+    
+    # Consider relevant if at least one term matches or if the query is very short
+    return matches > 0 or len(query_terms) == 0
+
+# Function to filter relevant assessments by excluding obvious mismatches
+def filter_irrelevant_tests(df, query):
+    query = query.lower()
+    
+    # Special case handling for common language/tech queries
+    filtered_df = df.copy()
+    
+    # Handle programming language specific queries
+    if 'java ' in query or query == 'java' or 'java developer' in query:
+        # For Java queries, prioritize Java tests and exclude non-relevant languages
+        relevant_terms = ['java', 'javascript', 'sql', 'programming', 'coding', 'developer']
+        filtered_df = filtered_df[filtered_df['full_text'].str.lower().apply(
+            lambda text: any(term in text.lower() for term in relevant_terms))]
+        
+    elif 'python' in query:
+        # For Python queries, prioritize Python tests
+        relevant_terms = ['python', 'programming', 'data science', 'sql', 'coding']
+        filtered_df = filtered_df[filtered_df['full_text'].str.lower().apply(
+            lambda text: any(term in text.lower() for term in relevant_terms))]
+    
+    # Add more language/tech specific filters as needed
+    
+    # If filtering removed all options, revert to original dataset
+    if len(filtered_df) == 0:
+        return df
+    
+    return filtered_df
+
 # Dynamic threshold based on overall score distribution
-def get_dynamic_threshold(scores, default_min=0.65):
+def get_dynamic_threshold(scores, default_min=0.60):
     if len(scores) < 5:
         return default_min
     
@@ -92,54 +113,43 @@ def get_dynamic_threshold(scores, default_min=0.65):
     mean_score = np.mean(scores)
     std_score = np.std(scores)
     
-    # More aggressive threshold: mean + 0.5*std deviation 
-    # This adapts to the distribution of your specific query
-    threshold = mean_score + 0.5 * std_score
+    # More aggressive threshold: mean + 0.25*std deviation 
+    threshold = mean_score + 0.25 * std_score
     
     # Don't go below our minimum acceptable threshold
     return max(threshold, default_min)
-
-# Check if an assessment is relevant to target skills
-def is_relevant_to_skills(assessment_text, target_skills):
-    assessment_text = assessment_text.lower()
-    # Return True if any target skill is found in the assessment text
-    return any(skill in assessment_text for skill in target_skills)
 
 # Recommend
 if st.button("Recommend"):
     if not query:
         st.warning("Please enter a job description or query.")
     else:
-        with st.spinner("Analyzing your query..."):
-            # First analyze the query to identify key skills
-            target_skills = analyze_query_skills(query)
-            
-            if not target_skills:
-                st.warning("Could not identify specific skills in your query. Using general matching.")
-
         with st.spinner("Finding relevant assessments..."):
             try:
+                # First filter obviously irrelevant tests based on keyword matching
+                filtered_df = filter_irrelevant_tests(df, query)
+                
                 query_vec = get_embedding(query)
                 
                 # Create a progress bar for embedding generation
                 progress_bar = st.progress(0)
-                total_items = len(df)
+                total_items = len(filtered_df)
                 
                 # Create empty score column
-                df["score"] = 0.0
+                filtered_df["score"] = 0.0
                 
                 # Process in batches to show progress
-                for i, row in enumerate(df.iterrows()):
+                for i, row in enumerate(filtered_df.iterrows()):
                     index, data = row
                     try:
                         doc_vec = get_embedding(data["full_text"])
                         similarity_score = cosine_similarity([query_vec], [doc_vec])[0][0]
                         
-                        # Give a boost to assessments that match the identified skills
-                        if target_skills and is_relevant_to_skills(data["full_text"].lower(), target_skills):
-                            similarity_score += 0.15  # Boost matching skill assessments
+                        # Give a boost to assessments that match keywords in query
+                        if is_relevant_to_query(data["full_text"], query):
+                            similarity_score += 0.1  # Boost matching assessments
                         
-                        df.at[index, "score"] = similarity_score
+                        filtered_df.at[index, "score"] = similarity_score
                     except Exception as e:
                         assessment_name = data.get("name", "Unknown")
                         st.warning(f"Error processing assessment {assessment_name}: {e}")
@@ -149,7 +159,7 @@ if st.button("Recommend"):
                     progress_bar.progress(progress)
                 
                 # Sort by relevance score
-                sorted_df = df.sort_values("score", ascending=False)
+                sorted_df = filtered_df.sort_values("score", ascending=False)
                 
                 # Get a dynamic threshold based on score distribution
                 all_scores = sorted_df["score"].values
@@ -194,10 +204,6 @@ if st.button("Recommend"):
                     },
                     hide_index=True
                 )
-                
-                # Show identified skills
-                if target_skills:
-                    st.info(f"Key skills identified in your query: {', '.join(target_skills)}")
                 
             except Exception as e:
                 st.error(f"Error during recommendation: {e}")
