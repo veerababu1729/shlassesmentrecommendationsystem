@@ -63,6 +63,9 @@ def get_embedding(text):
         st.error(f"Error generating embedding: {e}")
         raise
 
+# Threshold for relevance (can be adjusted)
+RELEVANCE_THRESHOLD = 0.5
+
 # Recommend
 if st.button("Recommend"):
     if not query:
@@ -94,17 +97,26 @@ if st.button("Recommend"):
                     progress = int((i + 1) / total_items * 100)
                     progress_bar.progress(progress)
                 
-                # Sort and display results
-                top_df = df.sort_values("score", ascending=False).head(10)
-                st.success("Top Recommended Assessments:")
+                # Sort by relevance score
+                sorted_df = df.sort_values("score", ascending=False)
+                
+                # Filter by relevance threshold to ensure results are relevant
+                relevant_df = sorted_df[sorted_df["score"] >= RELEVANCE_THRESHOLD]
+                
+                # Take up to 10 results
+                top_df = relevant_df.head(10)
+                
+                # If no results meet the threshold, take at least the top result
+                if len(top_df) == 0:
+                    top_df = sorted_df.head(1)
+                    st.warning("No highly relevant assessments found. Showing best match.")
+                
+                st.success(f"Found {len(top_df)} Recommended Assessments:")
                 
                 # Create a copy for display formatting
                 display_df = top_df.copy()
                 
-                # Format the URL column with markdown links
-                display_df["url"] = display_df.apply(
-                    lambda row: f"[Link]({row['url']})", axis=1
-                )
+                # Format the URL column with markdown links - not needed anymore as we use LinkColumn
                 
                 # Rename and format other columns
                 display_df = display_df.rename(columns={
@@ -120,11 +132,11 @@ if st.button("Recommend"):
                 # Format score as percentage
                 display_df["Relevance Score"] = display_df["Relevance Score"].apply(lambda x: f"{x:.2%}")
                 
-                # Display with markdown enabled for URLs
+                # Display with proper link column configuration
                 st.dataframe(
-                    display_df,
+                    display_df[["Assessment Name", "URL", "Test Type", "Duration", "Relevance Score"]],
                     column_config={
-                        "URL": st.column_config.LinkColumn()
+                        "URL": st.column_config.LinkColumn("Link")
                     },
                     hide_index=True
                 )
