@@ -39,7 +39,7 @@ try:
     if "full_text" not in df.columns:
         # Create full_text by combining available information
         df["full_text"] = df.apply(
-            lambda row: f"{row['name']} is a {row['test_type']} assessment with duration of {row['duration']}.", 
+            lambda row: f"{row['name']} is a {row['test_type']} assessment with duration of {row['duration']}. This test is designed to assess {row['test_type']} skills.", 
             axis=1
         )
 except Exception as e:
@@ -48,6 +48,26 @@ except Exception as e:
 
 # Get user input
 query = st.text_area("Job Description or Query")
+
+# Function to analyze query using Gemini to determine key skills
+def analyze_query_skills(query):
+    try:
+        model = genai.GenerativeModel('gemini-pro')
+        prompt = f"""
+        Analyze this job description or query and identify the key technical skills required:
+        
+        Query: {query}
+        
+        Respond ONLY with a comma-separated list of the main technical skills mentioned or implied.
+        Example output: "Java, Spring, Hibernate, SQL"
+        """
+        
+        response = model.generate_content(prompt)
+        skills = response.text.strip().split(',')
+        return [skill.strip().lower() for skill in skills]
+    except Exception as e:
+        st.error(f"Error analyzing query: {e}")
+        return []
 
 # Fix for the embedding model - Use the correct API based on version 0.8.4
 def get_embedding(text):
@@ -63,15 +83,41 @@ def get_embedding(text):
         st.error(f"Error generating embedding: {e}")
         raise
 
-# Threshold for relevance (can be adjusted)
-RELEVANCE_THRESHOLD = 0.5
+# Dynamic threshold based on overall score distribution
+def get_dynamic_threshold(scores, default_min=0.65):
+    if len(scores) < 5:
+        return default_min
+    
+    # Use statistical approaches to find natural cutoffs
+    mean_score = np.mean(scores)
+    std_score = np.std(scores)
+    
+    # More aggressive threshold: mean + 0.5*std deviation 
+    # This adapts to the distribution of your specific query
+    threshold = mean_score + 0.5 * std_score
+    
+    # Don't go below our minimum acceptable threshold
+    return max(threshold, default_min)
+
+# Check if an assessment is relevant to target skills
+def is_relevant_to_skills(assessment_text, target_skills):
+    assessment_text = assessment_text.lower()
+    # Return True if any target skill is found in the assessment text
+    return any(skill in assessment_text for skill in target_skills)
 
 # Recommend
 if st.button("Recommend"):
     if not query:
         st.warning("Please enter a job description or query.")
     else:
-        with st.spinner("Analyzing using Gemini..."):
+        with st.spinner("Analyzing your query..."):
+            # First analyze the query to identify key skills
+            target_skills = analyze_query_skills(query)
+            
+            if not target_skills:
+                st.warning("Could not identify specific skills in your query. Using general matching.")
+
+        with st.spinner("Finding relevant assessments..."):
             try:
                 query_vec = get_embedding(query)
                 
@@ -87,9 +133,14 @@ if st.button("Recommend"):
                     index, data = row
                     try:
                         doc_vec = get_embedding(data["full_text"])
-                        df.at[index, "score"] = cosine_similarity([query_vec], [doc_vec])[0][0]
+                        similarity_score = cosine_similarity([query_vec], [doc_vec])[0][0]
+                        
+                        # Give a boost to assessments that match the identified skills
+                        if target_skills and is_relevant_to_skills(data["full_text"].lower(), target_skills):
+                            similarity_score += 0.15  # Boost matching skill assessments
+                        
+                        df.at[index, "score"] = similarity_score
                     except Exception as e:
-                        # Use the correct column name 'name' instead of 'Assessment Name'
                         assessment_name = data.get("name", "Unknown")
                         st.warning(f"Error processing assessment {assessment_name}: {e}")
                     
@@ -100,23 +151,26 @@ if st.button("Recommend"):
                 # Sort by relevance score
                 sorted_df = df.sort_values("score", ascending=False)
                 
+                # Get a dynamic threshold based on score distribution
+                all_scores = sorted_df["score"].values
+                dynamic_threshold = get_dynamic_threshold(all_scores)
+                
                 # Filter by relevance threshold to ensure results are relevant
-                relevant_df = sorted_df[sorted_df["score"] >= RELEVANCE_THRESHOLD]
+                relevant_df = sorted_df[sorted_df["score"] >= dynamic_threshold]
                 
-                # Take up to 10 results
-                top_df = relevant_df.head(10)
-                
-                # If no results meet the threshold, take at least the top result
-                if len(top_df) == 0:
+                # Ensure we show between 1-10 results
+                if len(relevant_df) == 0:
                     top_df = sorted_df.head(1)
                     st.warning("No highly relevant assessments found. Showing best match.")
+                elif len(relevant_df) > 10:
+                    top_df = relevant_df.head(10)
+                else:
+                    top_df = relevant_df
                 
                 st.success(f"Found {len(top_df)} Recommended Assessments:")
                 
                 # Create a copy for display formatting
                 display_df = top_df.copy()
-                
-                # Format the URL column with markdown links - not needed anymore as we use LinkColumn
                 
                 # Rename and format other columns
                 display_df = display_df.rename(columns={
@@ -140,5 +194,10 @@ if st.button("Recommend"):
                     },
                     hide_index=True
                 )
+                
+                # Show identified skills
+                if target_skills:
+                    st.info(f"Key skills identified in your query: {', '.join(target_skills)}")
+                
             except Exception as e:
                 st.error(f"Error during recommendation: {e}")
