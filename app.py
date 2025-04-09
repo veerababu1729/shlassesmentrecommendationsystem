@@ -27,6 +27,36 @@ try:
             st.stop()
     
     genai.configure(api_key=api_key)
+    
+    # List available models (helpful for debugging)
+    available_models = [m.name for m in genai.list_models()]
+    gemini_models = [m for m in available_models if 'gemini' in m.lower()]
+    
+    # Debug expander for developers
+    with st.expander("Debug Info (Available Models)"):
+        st.write("Available Gemini Models:")
+        st.write(gemini_models)
+    
+    # Choose the right model - try newer naming conventions if available
+    model_name = None
+    
+    # Look for gemini models with priority order
+    preferred_models = ['gemini-1.5-pro', 'gemini-pro', 'gemini-1.0-pro']
+    for preferred in preferred_models:
+        matches = [m for m in gemini_models if preferred in m]
+        if matches:
+            model_name = matches[0]
+            break
+    
+    # If no match found, use the first available gemini model
+    if not model_name and gemini_models:
+        model_name = gemini_models[0]
+    
+    # If still no model found, show error
+    if not model_name:
+        st.error("No Gemini models available with your API key. Please check your API key permissions.")
+        st.stop()
+        
 except Exception as e:
     st.error(f"Error configuring API: {e}")
     st.stop()
@@ -66,10 +96,11 @@ except Exception as e:
     st.error(f"Error loading data: {e}")
     st.stop()
 
-# Function to use Gemini to match assessments with query - EXACT SAME AS IN API CODE
+# Function to use Gemini to match assessments with query
 def match_assessments_with_gemini(query, assessments_data):
     try:
-        model = genai.GenerativeModel('gemini-pro')
+        # Use the model name we determined earlier
+        model = genai.GenerativeModel(model_name)
         
         # Create a context with all assessment information
         assessments_context = []
@@ -107,7 +138,41 @@ def match_assessments_with_gemini(query, assessments_data):
         Your response should only include the JSON object, nothing else.
         """
         
-        response = model.generate_content(prompt)
+        # Use safety settings if necessary
+        safety_settings = [
+            {
+                "category": "HARM_CATEGORY_HARASSMENT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_HATE_SPEECH",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT",
+                "threshold": "BLOCK_NONE"
+            },
+            {
+                "category": "HARM_CATEGORY_DANGEROUS_CONTENT",
+                "threshold": "BLOCK_NONE"
+            }
+        ]
+        
+        # Set generation config
+        generation_config = {
+            "temperature": 0.2,
+            "top_p": 0.8,
+            "top_k": 40,
+            "max_output_tokens": 1024,
+        }
+        
+        # Generate content with updated parameters
+        response = model.generate_content(
+            prompt,
+            generation_config=generation_config,
+            safety_settings=safety_settings
+        )
+        
         response_text = response.text.strip()
         
         # Parse the JSON response
@@ -117,13 +182,23 @@ def match_assessments_with_gemini(query, assessments_data):
             if json_match:
                 result = json.loads(json_match.group(1))
                 return result.get("relevant_assessments", [])
-            return []
+            
+            # If the regex didn't match, try to parse the entire response as JSON
+            try:
+                result = json.loads(response_text)
+                return result.get("relevant_assessments", [])
+            except:
+                st.error("Failed to parse Gemini JSON response")
+                st.code(response_text)
+                return []
+                
         except json.JSONDecodeError as e:
             st.error(f"Error parsing Gemini response: {e}")
             st.write(f"Response was: {response_text}")
             return []
     except Exception as e:
         st.error(f"Error in Gemini matching: {e}")
+        st.exception(e)
         return []
 
 # Get user input
