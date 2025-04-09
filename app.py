@@ -2,8 +2,14 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import google.generativeai as genai
-from sklearn.metrics.pairwise import cosine_similarity
 import os
+import json
+import re
+
+# Setup Streamlit page
+st.set_page_config(page_title="SHL Assessment Recommender", layout="centered")
+st.title("🔍 SHL Assessment Recommendation System")
+st.write("Paste a job description or query below:")
 
 # Setup Gemini API - Use proper error handling for API key
 try:
@@ -26,98 +32,117 @@ except Exception as e:
     st.error(f"Error configuring API: {e}")
     st.stop()
 
-# Streamlit UI
-st.set_page_config(page_title="SHL Assessment Recommender", layout="centered")
-st.title("🔍 SHL Assessment Recommendation System")
-st.write("Paste a job description or query below:")
-
 # Load data
 try:
     df = pd.read_csv("data/assessments.csv")
     
-    # Add a full_text column if it doesn't exist
+    # Add descriptions for each assessment (from first code)
+    descriptions = {
+        "Python Programming Test": "Multi-choice test that measures the knowledge of Python programming, databases, modules and library. For Mid-Professional developers.",
+        "Java Programming Test": "Multi-choice test that measures the knowledge of Java programming, databases, frameworks and libraries. For Entry-Level developers.",
+        "SQL Test": "Assessment that measures SQL querying and database knowledge. For data professionals and developers.",
+        "JavaScript Test": "Assessment that evaluates JavaScript programming skills including DOM manipulation and frameworks.",
+        "Verify Numerical Reasoning Test": "Assessment that measures numerical reasoning ability for workplace performance.",
+        "Verify Verbal Reasoning Test": "Assessment that measures verbal reasoning ability for workplace performance.",
+        "Verify Coding Pro": "Advanced coding assessment for professional developers across multiple languages.",
+        "OPQ Personality Assessment": "Comprehensive workplace personality assessment for job fit and development.",
+        "Workplace Personality Assessment": "Assessment that evaluates workplace behavior and personality traits.",
+        "Business Simulation": "Interactive business scenario simulation for evaluating decision-making skills.",
+        "General Ability Test": "Assessment that measures general mental ability across various cognitive domains.",
+        "Teamwork Assessment": "The Technology Job Focused Assessment assesses key behavioral attributes required for success in fast-paced, rapidly changing technology work environments."
+    }
+    
+    # Map descriptions to dataframe (add with safe handling if column doesn't exist)
+    df["description"] = df["name"].map(lambda name: descriptions.get(name, ""))
+    
+    # Create full_text column like in original
     if "full_text" not in df.columns:
-        # Create full_text by combining available information
         df["full_text"] = df.apply(
-            lambda row: f"{row['name']} is a {row['test_type']} assessment with duration of {row['duration']}. This test is designed to assess {row['test_type']} skills.", 
+            lambda row: f"{row['name']} is a {row['test_type']} assessment with duration of {row['duration']}. {row.get('description', '')}", 
             axis=1
         )
+    
+    # Define test type mappings for API response format (from first code)
+    st.session_state.test_type_mappings = {
+        "Cognitive": ["Knowledge & Skills"],
+        "Technical": ["Knowledge & Skills"],
+        "Personality": ["Personality & Behaviour"],
+        "Behavioral": ["Competencies", "Personality & Behaviour"],
+        "Simulation": ["Competencies"]
+    }
 except Exception as e:
     st.error(f"Error loading data: {e}")
     st.stop()
 
+# Function to use Gemini to match assessments with query (from first code)
+def match_assessments_with_gemini(query, assessments_data):
+    try:
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # Create a context with all assessment information
+        assessments_context = []
+        for _, row in assessments_data.iterrows():
+            assessment_info = {
+                "name": row["name"],
+                "description": row.get("description", ""),
+                "test_type": row["test_type"],
+                "duration": row["duration"]
+            }
+            assessments_context.append(assessment_info)
+        
+        # Create the prompt for Gemini
+        prompt = f"""
+        As an HR assessment recommendation system, I need to find the most relevant assessments for the following job description or query:
+
+        Query: "{query}"
+
+        Available assessments:
+        {json.dumps(assessments_context, indent=2)}
+
+        For this query, which assessments from the list would be most relevant? Consider:
+        1. Technical skills mentioned in the query
+        2. Soft skills or personality traits mentioned
+        3. The specific job role or industry
+        4. Required experience level if mentioned
+
+        Identify only the assessment names that are truly relevant to the query. Do not include any assessment that doesn't directly relate to the skills or attributes mentioned in the query. For example, if the query mentions "Java developer", don't include Python assessments.
+
+        Respond with a JSON object having this exact format:
+        {{
+          "relevant_assessments": ["Assessment Name 1", "Assessment Name 2", ...],
+          "relevance_scores": [0.95, 0.87, ...] 
+        }}
+        
+        The relevance_scores should be numbers between 0 and 1 indicating how relevant each assessment is.
+
+        Your response should only include the JSON object, nothing else.
+        """
+        
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
+        
+        # Parse the JSON response
+        try:
+            # Find JSON content between curly braces
+            json_match = re.search(r'({.*})', response_text.replace('\n', ' '), re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(1))
+                assessments = result.get("relevant_assessments", [])
+                scores = result.get("relevance_scores", [1.0] * len(assessments))  # Default score if missing
+                
+                # Return tuple of assessments and scores
+                return assessments, scores
+            return [], []
+        except json.JSONDecodeError as e:
+            st.error(f"Error parsing Gemini response: {e}")
+            st.write(f"Response was: {response_text}")
+            return [], []
+    except Exception as e:
+        st.error(f"Error in Gemini matching: {e}")
+        return [], []
+
 # Get user input
 query = st.text_area("Job Description or Query")
-
-# Fix for the embedding model - Use the correct API based on version 0.8.4
-def get_embedding(text):
-    try:
-        # Current Google Generative AI API (v0.8.4) uses this method for embeddings
-        response = genai.embed_content(
-            model="models/embedding-001",
-            content=text,
-            task_type="retrieval_document"
-        )
-        return np.array(response["embedding"])
-    except Exception as e:
-        st.error(f"Error generating embedding: {e}")
-        raise
-
-# Check if an assessment is relevant based on keywords in query
-def is_relevant_to_query(assessment_text, query_terms):
-    assessment_text = assessment_text.lower()
-    # Extract important words from query (remove common words)
-    query_terms = [term.lower() for term in query_terms.split() 
-                  if len(term) > 2 and term.lower() not in ['the', 'and', 'for', 'with']]
-    
-    # Count how many query terms appear in the assessment text
-    matches = sum(1 for term in query_terms if term in assessment_text)
-    
-    # Consider relevant if at least one term matches or if the query is very short
-    return matches > 0 or len(query_terms) == 0
-
-# Function to filter relevant assessments by excluding obvious mismatches
-def filter_irrelevant_tests(df, query):
-    query = query.lower()
-    
-    # Special case handling for common language/tech queries
-    filtered_df = df.copy()
-    
-    # Handle programming language specific queries
-    if 'java ' in query or query == 'java' or 'java developer' in query:
-        # For Java queries, prioritize Java tests and exclude non-relevant languages
-        relevant_terms = ['java', 'javascript', 'sql', 'programming', 'coding', 'developer']
-        filtered_df = filtered_df[filtered_df['full_text'].str.lower().apply(
-            lambda text: any(term in text.lower() for term in relevant_terms))]
-        
-    elif 'python' in query:
-        # For Python queries, prioritize Python tests
-        relevant_terms = ['python', 'programming', 'data science', 'sql', 'coding']
-        filtered_df = filtered_df[filtered_df['full_text'].str.lower().apply(
-            lambda text: any(term in text.lower() for term in relevant_terms))]
-    
-    # Add more language/tech specific filters as needed
-    
-    # If filtering removed all options, revert to original dataset
-    if len(filtered_df) == 0:
-        return df
-    
-    return filtered_df
-
-# Dynamic threshold based on overall score distribution
-def get_dynamic_threshold(scores, default_min=0.60):
-    if len(scores) < 5:
-        return default_min
-    
-    # Use statistical approaches to find natural cutoffs
-    mean_score = np.mean(scores)
-    std_score = np.std(scores)
-    
-    # More aggressive threshold: mean + 0.25*std deviation 
-    threshold = mean_score + 0.25 * std_score
-    
-    # Don't go below our minimum acceptable threshold
-    return max(threshold, default_min)
 
 # Recommend
 if st.button("Recommend"):
@@ -126,53 +151,29 @@ if st.button("Recommend"):
     else:
         with st.spinner("Finding relevant assessments..."):
             try:
-                # First filter obviously irrelevant tests based on keyword matching
-                filtered_df = filter_irrelevant_tests(df, query)
+                # Use Gemini to get relevant assessment names
+                relevant_assessment_names, relevance_scores = match_assessments_with_gemini(query, df)
                 
-                query_vec = get_embedding(query)
+                # Create a dictionary mapping assessment names to scores
+                score_dict = dict(zip(relevant_assessment_names, relevance_scores))
                 
-                # Create a progress bar for embedding generation
-                progress_bar = st.progress(0)
-                total_items = len(filtered_df)
-                
-                # Create empty score column
-                filtered_df["score"] = 0.0
-                
-                # Process in batches to show progress
-                for i, row in enumerate(filtered_df.iterrows()):
-                    index, data = row
-                    try:
-                        doc_vec = get_embedding(data["full_text"])
-                        similarity_score = cosine_similarity([query_vec], [doc_vec])[0][0]
-                        
-                        # Give a boost to assessments that match keywords in query
-                        if is_relevant_to_query(data["full_text"], query):
-                            similarity_score += 0.1  # Boost matching assessments
-                        
-                        filtered_df.at[index, "score"] = similarity_score
-                    except Exception as e:
-                        assessment_name = data.get("name", "Unknown")
-                        st.warning(f"Error processing assessment {assessment_name}: {e}")
-                    
-                    # Update progress
-                    progress = int((i + 1) / total_items * 100)
-                    progress_bar.progress(progress)
-                
-                # Sort by relevance score
-                sorted_df = filtered_df.sort_values("score", ascending=False)
-                
-                # Get a dynamic threshold based on score distribution
-                all_scores = sorted_df["score"].values
-                dynamic_threshold = get_dynamic_threshold(all_scores)
-                
-                # Filter by relevance threshold to ensure results are relevant
-                relevant_df = sorted_df[sorted_df["score"] >= dynamic_threshold]
-                
-                # Ensure we show between 1-10 results
-                if len(relevant_df) == 0:
-                    top_df = sorted_df.head(1)
+                # Filter the DataFrame to include only relevant assessments
+                if relevant_assessment_names:
+                    relevant_df = df[df["name"].isin(relevant_assessment_names)].copy()
+                    # Add scores to dataframe
+                    relevant_df["score"] = relevant_df["name"].map(lambda name: score_dict.get(name, 0.0))
+                    # Sort by relevance score
+                    relevant_df = relevant_df.sort_values("score", ascending=False)
+                else:
+                    # Fallback: If no matches, return a general assessment
                     st.warning("No highly relevant assessments found. Showing best match.")
-                elif len(relevant_df) > 10:
+                    relevant_df = df[df["name"] == "General Ability Test"].copy()
+                    if relevant_df.empty:
+                        relevant_df = df.head(1).copy()  # Absolute fallback
+                    relevant_df["score"] = 0.6  # Default score
+                
+                # Ensure we have between 1-10 results
+                if len(relevant_df) > 10:
                     top_df = relevant_df.head(10)
                 else:
                     top_df = relevant_df
@@ -182,7 +183,7 @@ if st.button("Recommend"):
                 # Create a copy for display formatting
                 display_df = top_df.copy()
                 
-                # Rename and format other columns
+                # Format the assessment data for display
                 display_df = display_df.rename(columns={
                     "name": "Assessment Name",
                     "url": "URL",  
@@ -196,6 +197,21 @@ if st.button("Recommend"):
                 # Format score as percentage
                 display_df["Relevance Score"] = display_df["Relevance Score"].apply(lambda x: f"{x:.2%}")
                 
+                # Additional info section (similar to first code's response format)
+                with st.expander("Detailed Assessment Information"):
+                    for _, row in top_df.iterrows():
+                        duration_value = int(''.join(filter(str.isdigit, row["duration"])))
+                        test_type_list = st.session_state.test_type_mappings.get(row["test_type"], [row["test_type"]])
+                        
+                        st.subheader(row["name"])
+                        st.markdown(f"**Description:** {row.get('description', '')}")
+                        st.markdown(f"**Duration:** {duration_value} minutes")
+                        st.markdown(f"**Test Type:** {', '.join(test_type_list)}")
+                        st.markdown(f"**Remote Testing:** {'Yes' if row.get('remote_testing') == 'Yes' else 'No'}")
+                        st.markdown(f"**Adaptive Support:** {'Yes' if row.get('adaptive_irt') == 'Yes' else 'No'}")
+                        st.markdown(f"**URL:** {row['url']}")
+                        st.markdown("---")
+                
                 # Display with proper link column configuration
                 st.dataframe(
                     display_df[["Assessment Name", "URL", "Test Type", "Duration", "Relevance Score"]],
@@ -207,3 +223,4 @@ if st.button("Recommend"):
                 
             except Exception as e:
                 st.error(f"Error during recommendation: {e}")
+                st.exception(e)
