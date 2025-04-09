@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import google.generativeai as genai
 import os
 import json
@@ -52,18 +51,11 @@ try:
         "Teamwork Assessment": "The Technology Job Focused Assessment assesses key behavioral attributes required for success in fast-paced, rapidly changing technology work environments."
     }
     
-    # Map descriptions to dataframe (add with safe handling if column doesn't exist)
-    df["description"] = df["name"].map(lambda name: descriptions.get(name, ""))
+    # Map descriptions to dataframe
+    df["description"] = df["name"].map(descriptions)
     
-    # Create full_text column like in original
-    if "full_text" not in df.columns:
-        df["full_text"] = df.apply(
-            lambda row: f"{row['name']} is a {row['test_type']} assessment with duration of {row['duration']}. {row.get('description', '')}", 
-            axis=1
-        )
-    
-    # Define test type mappings for API response format (from first code)
-    st.session_state.test_type_mappings = {
+    # Define test type mappings for API response format
+    test_type_mappings = {
         "Cognitive": ["Knowledge & Skills"],
         "Technical": ["Knowledge & Skills"],
         "Personality": ["Personality & Behaviour"],
@@ -74,7 +66,7 @@ except Exception as e:
     st.error(f"Error loading data: {e}")
     st.stop()
 
-# Function to use Gemini to match assessments with query (from first code)
+# Function to use Gemini to match assessments with query - EXACT SAME AS IN API CODE
 def match_assessments_with_gemini(query, assessments_data):
     try:
         model = genai.GenerativeModel('gemini-pro')
@@ -84,7 +76,7 @@ def match_assessments_with_gemini(query, assessments_data):
         for _, row in assessments_data.iterrows():
             assessment_info = {
                 "name": row["name"],
-                "description": row.get("description", ""),
+                "description": row["description"],
                 "test_type": row["test_type"],
                 "duration": row["duration"]
             }
@@ -109,11 +101,8 @@ def match_assessments_with_gemini(query, assessments_data):
 
         Respond with a JSON object having this exact format:
         {{
-          "relevant_assessments": ["Assessment Name 1", "Assessment Name 2", ...],
-          "relevance_scores": [0.95, 0.87, ...] 
+          "relevant_assessments": ["Assessment Name 1", "Assessment Name 2", ...]
         }}
-        
-        The relevance_scores should be numbers between 0 and 1 indicating how relevant each assessment is.
 
         Your response should only include the JSON object, nothing else.
         """
@@ -127,19 +116,15 @@ def match_assessments_with_gemini(query, assessments_data):
             json_match = re.search(r'({.*})', response_text.replace('\n', ' '), re.DOTALL)
             if json_match:
                 result = json.loads(json_match.group(1))
-                assessments = result.get("relevant_assessments", [])
-                scores = result.get("relevance_scores", [1.0] * len(assessments))  # Default score if missing
-                
-                # Return tuple of assessments and scores
-                return assessments, scores
-            return [], []
+                return result.get("relevant_assessments", [])
+            return []
         except json.JSONDecodeError as e:
             st.error(f"Error parsing Gemini response: {e}")
             st.write(f"Response was: {response_text}")
-            return [], []
+            return []
     except Exception as e:
         st.error(f"Error in Gemini matching: {e}")
-        return [], []
+        return []
 
 # Get user input
 query = st.text_area("Job Description or Query")
@@ -151,72 +136,78 @@ if st.button("Recommend"):
     else:
         with st.spinner("Finding relevant assessments..."):
             try:
-                # Use Gemini to get relevant assessment names
-                relevant_assessment_names, relevance_scores = match_assessments_with_gemini(query, df)
-                
-                # Create a dictionary mapping assessment names to scores
-                score_dict = dict(zip(relevant_assessment_names, relevance_scores))
+                # Get relevant assessment names using Gemini
+                relevant_assessment_names = match_assessments_with_gemini(query, df)
                 
                 # Filter the DataFrame to include only relevant assessments
                 if relevant_assessment_names:
-                    relevant_df = df[df["name"].isin(relevant_assessment_names)].copy()
-                    # Add scores to dataframe
-                    relevant_df["score"] = relevant_df["name"].map(lambda name: score_dict.get(name, 0.0))
-                    # Sort by relevance score
-                    relevant_df = relevant_df.sort_values("score", ascending=False)
+                    relevant_df = df[df["name"].isin(relevant_assessment_names)]
                 else:
                     # Fallback: If no matches, return a general assessment
                     st.warning("No highly relevant assessments found. Showing best match.")
-                    relevant_df = df[df["name"] == "General Ability Test"].copy()
+                    relevant_df = df[df["name"] == "General Ability Test"]
                     if relevant_df.empty:
-                        relevant_df = df.head(1).copy()  # Absolute fallback
-                    relevant_df["score"] = 0.6  # Default score
+                        relevant_df = df.head(1)  # Absolute fallback
                 
-                # Ensure we have between 1-10 results
-                if len(relevant_df) > 10:
-                    top_df = relevant_df.head(10)
-                else:
-                    top_df = relevant_df
+                # Format the assessment data for the response
+                recommended_assessments = []
+                for _, row in relevant_df.iterrows():
+                    duration_value = int(''.join(filter(str.isdigit, row["duration"])))
+                    test_type_list = test_type_mappings.get(row["test_type"], [row["test_type"]])
+                    
+                    assessment = {
+                        "url": row["url"],
+                        "adaptive_support": "Yes" if row["adaptive_irt"] == "Yes" else "No",
+                        "description": row["description"],
+                        "duration": duration_value,
+                        "remote_support": "Yes" if row["remote_testing"] == "Yes" else "No",
+                        "test_type": test_type_list,
+                        "name": row["name"]  # Adding name for display purposes
+                    }
+                    recommended_assessments.append(assessment)
                 
-                st.success(f"Found {len(top_df)} Recommended Assessments:")
+                # Ensure we have at least one assessment
+                if not recommended_assessments:
+                    # Absolute fallback - use first assessment in dataset
+                    first_row = df.iloc[0]
+                    duration_value = int(''.join(filter(str.isdigit, first_row["duration"])))
+                    test_type_list = test_type_mappings.get(first_row["test_type"], [first_row["test_type"]])
+                    
+                    fallback_assessment = {
+                        "url": first_row["url"],
+                        "adaptive_support": "Yes" if first_row["adaptive_irt"] == "Yes" else "No",
+                        "description": first_row["description"],
+                        "duration": duration_value,
+                        "remote_support": "Yes" if first_row["remote_testing"] == "Yes" else "No",
+                        "test_type": test_type_list,
+                        "name": first_row["name"]  # Adding name for display purposes
+                    }
+                    recommended_assessments = [fallback_assessment]
+                elif len(recommended_assessments) > 10:
+                    recommended_assessments = recommended_assessments[:10]
                 
-                # Create a copy for display formatting
-                display_df = top_df.copy()
+                # Create DataFrame from recommendation results for display
+                results_df = pd.DataFrame(recommended_assessments)
                 
-                # Format the assessment data for display
-                display_df = display_df.rename(columns={
-                    "name": "Assessment Name",
-                    "url": "URL",  
-                    "duration": "Duration",
-                    "remote_testing": "Remote Testing Support",
-                    "adaptive_irt": "Adaptive/IRT Support",
-                    "test_type": "Test Type",
-                    "score": "Relevance Score"
-                })
+                # Convert test_type list to string for display
+                results_df["test_type_str"] = results_df["test_type"].apply(lambda x: ", ".join(x))
                 
-                # Format score as percentage
-                display_df["Relevance Score"] = display_df["Relevance Score"].apply(lambda x: f"{x:.2%}")
+                # Show number of results
+                st.success(f"Found {len(recommended_assessments)} Recommended Assessments:")
                 
-                # Additional info section (similar to first code's response format)
-                with st.expander("Detailed Assessment Information"):
-                    for _, row in top_df.iterrows():
-                        duration_value = int(''.join(filter(str.isdigit, row["duration"])))
-                        test_type_list = st.session_state.test_type_mappings.get(row["test_type"], [row["test_type"]])
-                        
-                        st.subheader(row["name"])
-                        st.markdown(f"**Description:** {row.get('description', '')}")
-                        st.markdown(f"**Duration:** {duration_value} minutes")
-                        st.markdown(f"**Test Type:** {', '.join(test_type_list)}")
-                        st.markdown(f"**Remote Testing:** {'Yes' if row.get('remote_testing') == 'Yes' else 'No'}")
-                        st.markdown(f"**Adaptive Support:** {'Yes' if row.get('adaptive_irt') == 'Yes' else 'No'}")
-                        st.markdown(f"**URL:** {row['url']}")
-                        st.markdown("---")
-                
-                # Display with proper link column configuration
+                # Display table with the same headings used in API endpoint
                 st.dataframe(
-                    display_df[["Assessment Name", "URL", "Test Type", "Duration", "Relevance Score"]],
+                    results_df[["name", "url", "description", "duration", "remote_support", "adaptive_support", "test_type_str"]].rename(columns={
+                        "name": "Assessment Name",
+                        "url": "URL",
+                        "description": "Description",
+                        "duration": "Duration (minutes)",
+                        "remote_support": "Remote Support",
+                        "adaptive_support": "Adaptive Support",
+                        "test_type_str": "Test Type"
+                    }),
                     column_config={
-                        "URL": st.column_config.LinkColumn("Link")
+                        "URL": st.column_config.LinkColumn("URL")
                     },
                     hide_index=True
                 )
