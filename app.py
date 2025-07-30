@@ -290,3 +290,6 @@ if st.button("Recommend"):
             except Exception as e:
                 st.error(f"Error during recommendation: {e}")
                 st.exception(e)
+# Footer
+st.markdown("---")
+st.markdown("© 2025 | Built with ❤️ using Streamlit and Gemini API")
